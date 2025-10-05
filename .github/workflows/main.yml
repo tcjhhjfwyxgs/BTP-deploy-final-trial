@@ -1,0 +1,41 @@
+# GitHub Actions 工作流文件名
+name: Deploy tg-proxy to SAP BTP
+
+# 触发工作流的条件
+on:
+  workflow_dispatch:
+
+# 定义一些可以在下面重复使用的环境变量
+env:
+  BTP_APP_NAME: my-tg-proxy-docker  # BTP 上的应用名称，可以自定义
+  DOCKER_IMAGE: songnidedubai/tg-proxy # 要部署的 Docker 镜像
+
+# 定义具体的工作任务
+jobs:
+  deploy-to-btp:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v3
+      - name: Setup CF CLI
+        uses: sap-actions/setup-cf@v4
+      - name: Login to BTP
+        run: |
+          cf api "${{ secrets.BTP_API }}"
+          cf auth "${{ secrets.BTP_USER }}" "${{ secrets.BTP_PASS }}"
+          cf target -o "${{ secrets.BTP_ORG }}" -s "${{ secrets.BTP_SPACE }}"
+      - name: Push Docker Image to BTP
+        run: |
+          cf push ${{ env.BTP_APP_NAME }} \
+            --docker-image ${{ env.DOCKER_IMAGE }} \
+            --docker-username "dummy" \
+            --random-route \
+            -m 128M \
+            --no-start
+      - name: Set Environment Variables
+        run: |
+          cf set-env ${{ env.BTP_APP_NAME }} BOT_TOKEN "${{ secrets.TG_BOT_TOKEN }}"
+          cf set-env ${{ env.BTP_APP_NAME }} CHAT_ID "${{ secrets.TG_CHAT_ID }}"
+          cf set-env ${{ env.BTP_APP_NAME }} PROXY_SECRET "${{ secrets.TG_PROXY_SECRET }}"
+      - name: Start Application
+        run: cf start ${{ env.BTP_APP_NAME }}
