@@ -1,0 +1,93 @@
+name: Deploy mybtjson/youtube to SAP BTP (CF)
+
+on:
+  workflow_dispatch:
+
+env:
+  APP_NAME: youtube-proxy
+  DOCKER_IMAGE: mybtjson/youtube:latest
+  MEMORY: 256M
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Install prerequisites
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y wget ca-certificates
+
+      - name: Install CF CLI (official package)
+        run: |
+          set -eux
+          wget -q -O cf-cli.deb "https://packages.cloudfoundry.org/stable?release=debian64&source=github"
+          sudo dpkg -i cf-cli.deb || (sudo apt-get install -f -y && sudo dpkg -i cf-cli.deb)
+          cf --version
+
+      - name: Show config (sanitized)
+        run: |
+          echo "APP_NAME=${{ env.APP_NAME }}"
+          echo "DOCKER_IMAGE=${{ env.DOCKER_IMAGE }}"
+          echo "MEMORY=${{ env.MEMORY }}"
+          echo "BTP_API=${{ secrets.BTP_API }}"
+          echo "BTP_ORG=${{ secrets.BTP_ORG }}"
+          echo "BTP_SPACE=${{ secrets.BTP_SPACE }}"
+
+      - name: CF login & target (verbose)
+        env:
+          CF_TRACE: true
+        run: |
+          set -eux
+          # 有些 endpoint 需要 --skip-ssl-validation；如不确定可先保留
+          cf api "${{ secrets.BTP_API }}" --skip-ssl-validation || cf api "${{ secrets.BTP_API }}"
+          cf auth "${{ secrets.BTP_USER }}" "${{ secrets.BTP_PASS }}"
+          cf target -o "${{ secrets.BTP_ORG }}" -s "${{ secrets.BTP_SPACE }}"
+
+      - name: Push Docker image (no start) — supports private Docker Hub optionally
+        run: |
+          set -eux
+          # 如果需要拉私有 Docker Hub 镜像，请在 Secrets 中配置 DOCKERHUB_USER & DOCKERHUB_PASS
+          if [ -n "${{ secrets.DOCKERHUB_USER }}" ]; then
+            cf push "${{ env.APP_NAME }}" \
+              --docker-image "${{ env.DOCKER_IMAGE }}" \
+              --docker-username "${{ secrets.DOCKERHUB_USER }}" \
+              --docker-password "${{ secrets.DOCKERHUB_PASS }}" \
+              --random-route \
+              -m "${{ env.MEMORY }}" \
+              --no-start
+          else
+            cf push "${{ env.APP_NAME }}" \
+              --docker-image "${{ env.DOCKER_IMAGE }}" \
+              --random-route \
+              -m "${{ env.MEMORY }}" \
+              --no-start
+          fi
+
+      - name: Set environment variables (YOUTUBE proxy key)
+        run: |
+          set -eux
+          cf set-env "${{ env.APP_NAME }}" YOUTUBE_PROXY_API_KEY "${{ secrets.YT_PROXY_KEY }}"
+
+      - name: Start application and collect diagnostics if failed
+        run: |
+          set -eux
+          if cf start "${{ env.APP_NAME }}"; then
+            echo "App started successfully"
+            cf app "${{ env.APP_NAME }}" || true
+          else
+            echo "cf start failed — collecting diagnostics"
+            echo "=== CF APP INFO ==="
+            cf app "${{ env.APP_NAME }}" || true
+            echo "=== CF RECENT LOGS ==="
+            cf logs "${{ env.APP_NAME }}" --recent || true
+            echo "=== CF EVENTS ==="
+            cf events "${{ env.APP_NAME }}" || true
+            exit 1
+          fi
+
+      - name: Final apps list
+        run: |
+          cf apps || true
